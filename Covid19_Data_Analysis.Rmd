@@ -1,0 +1,285 @@
+---
+title: "Covid19"
+author: "Ye Lwin Oo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Required Library Packages
+
+```{r packages, results = 'hide', message=FALSE}
+library(tidyverse)
+library(grid)
+library(knitr)
+library(stringr)
+library(patchwork)
+```
+```{r version}
+installed.packages()[names(sessionInfo()$otherPkgs), "Version"]
+```
+
+# Covid 19 Data
+
+This report is about the discussion on data obtained from [Covid 19 Dataset](https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series) provided by John Hopkins University in github. This report will look into the four time series data tables. Two of those time series are for the US confirmed cases and deaths, reported at county level. The other two series are for the global confirmed cases and deaths. The population of the countries are also obtained [here](https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv) to support the data analysis of COVID-19 cases.
+
+This report will analyse the trends of number of COVID-19 cases per population globally and US states from 2020 to 2023. We will also utilize the linear regression model to understand the relationship between the fatality from COVID-19 and time.
+```{r get_jhu_data, results = 'hide',message=FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_global.csv","time_series_covid19_deaths_global.csv","time_series_covid19_confirmed_US.csv","time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in,file_names)
+
+#read the data tables
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+
+#url for getting population of countries
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>% 
+  select(-c(Lat,Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+## Data Cleaning 
+
+Deaths, Cases, Population, Country, States, and date are filtered and combined from all the data sets into two data set.  
+```{r tidy_global_data,message=FALSE}
+global_cases <- global_cases %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long),
+                                              names_to = "date",values_to = "cases" ) %>% select(-c(Lat,Long))
+global_deaths <- global_deaths %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long),
+                                                          names_to = "date",values_to = "deaths" ) %>% select(-c(Lat,Long))
+#combine cases and deaths
+global <- global_cases %>% full_join(global_deaths) %>% rename(Country_Region = `Country/Region`,
+                                                               Province_State = `Province/State`) %>% mutate(date = mdy(date))
+global <- global %>% filter(cases>0)
+
+#combine with the population data
+global <- global %>% 
+  left_join(uid, by = c("Province_State", "Country_Region")) %>% 
+  select(-c(UID, FIPS)) %>% 
+  select(Province_State, Country_Region, date, cases, deaths, Population)
+
+#US cases
+US_cases <- US_cases %>% pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to = "cases") %>% 
+  select(Admin2 :cases) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+#US deaths
+US_deaths <- US_deaths %>% pivot_longer(cols = -(UID:Population), names_to = "date", values_to = "deaths") %>% 
+  select(Admin2 :deaths) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+
+#combine US cases and deaths
+US <- US_cases %>% full_join(US_deaths)
+US <- US %>% select(-c(Admin2,Combined_Key))
+
+kable(summary(global), format = "markdown", caption = "Summary of Countries Dataset")
+kable(summary(US), format = "markdown", caption = "Summary of Countries Dataset")
+```
+
+## Analysis of number of cases globally from 2020 to 2023
+
+The global data is organized so that the number of COVID-19 cases for each country is shown for each year. The population for each country is assumed to be constant over the years and countries without population data is excluded. For each country, percentage of number of cases over population is calculated. Top and bottom five countries in the data set table for percentage of number of cases over population in 2023 are observed. 
+```{r organize_global_Data,message=FALSE}
+global <- global %>% mutate(year = lubridate::year(date))
+
+global_cases_per_pop <- global %>%
+  group_by(Country_Region, year) %>%
+  summarise(
+    Total_Cases = max(cases, na.rm = TRUE),
+    Total_Deaths = max(deaths, na.rm = TRUE),
+    Population = max(Population, na.rm = TRUE)
+  ) %>%
+  mutate(Cases_Per_Population = 100* (Total_Cases / Population)) %>% # Compute cases per population
+  ungroup()  
+
+#filter out the countries with no population
+no_population_data <- global_cases_per_pop %>% filter(Population == -Inf)
+global_cases_per_pop <- global_cases_per_pop %>% filter(Population != -Inf)
+
+# Get the top 5 countries overall
+top_5_countries <- global_cases_per_pop %>%
+  filter(year == 2023) %>% 
+  arrange(desc(Cases_Per_Population)) %>%
+  slice_head(n = 5)
+
+#get top 5 countries and US data for all years 
+top_5_countries_all_years <- global_cases_per_pop %>%
+  filter(Country_Region %in% (top_5_countries$Country_Region) | Country_Region == "US")
+
+colnames(top_5_countries) <- c("Country", "Year", "Number of Cases", "Number of Deaths", "Population", "% of Cases Per Population")
+kable(top_5_countries, caption = "Top 5 Countries with Most COVID-19 Cases")
+
+# Get the least 5 countries overall
+least_5_countries <- global_cases_per_pop %>%
+  filter(year == 2023) %>% 
+  arrange(desc(Cases_Per_Population)) %>%
+  slice_tail(n = 5)
+
+#get least 5 countries data for all years 
+least_5_countries_all_years <- global_cases_per_pop %>%
+  filter(Country_Region %in% (least_5_countries$Country_Region))
+
+colnames(least_5_countries) <- c("Country", "Year", "Number of Cases", "Number of Deaths", "Population", "% of Cases Per Population")
+kable(least_5_countries, caption = "Top 5 Countries with Least COVID-19 Cases")
+```
+### Analysis on 10 countries with Most and Least COVID-19 Cases
+
+The figure below shows the five countries and US where the highest percentage of number of people per population is infected by COVID-19. It can be seen that there is a drastic jump from 2021 to 2022 for all the countries. Interestingly, four out of five countries except Brunei are European countries and in close vicinity to one another. Moreover, San Marino and Andorra both are very small countries and have a population of less than 80,000 in 2023. It could be that the COVID-19 spread easier in smaller countries with certain lifestyle due to the air-borne infectious nature of COVID-19. Therefore, although the number of cases are very low for those two countries, the percentage per population became higher than a lot of countries. Moreover, the infection rate for those countries is almost twice as that of US, which could be considered as a more developed country. 
+
+```{r global_top5_plot}
+#plot the top 5 countries and US data
+ggplot(top_5_countries_all_years, aes(x = year, y = Cases_Per_Population, color = Country_Region)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Five Countries with Most COVID-19 Cases Per Population and US",
+       x = "Year", y = "% of Cases Per Population", color = "Country") +
+  theme_minimal()
+```
+
+The figure below shows the five countries where the lowest percentage number of people per population is infected by COVID-19. The infection percentage is less than 0.08%, which seems not plausible considering the infectious nature of COVID-19. The first interesting thing to note is that North Korea officially reported only one single case but has six number of deaths. Considering the political isolation of North Korea, it could be said that the reported number did not represent the actual situation. Secondly, all the other four countries are from Africa that have been struggling with humanitarian crisis with majority of the population is living below the national poverty line.Therefore, they might not have the healthcare system that is equipped enough to handle COVID-19 and officially report the cases.
+
+```{r global_least5_plot}
+#plot the least 5 countries and US data
+ggplot(least_5_countries_all_years, aes(x = year, y = Cases_Per_Population, color = Country_Region)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Five Countries with Minimal COVID-19 Cases Per Population",
+       x = "Year", y = "% Of Cases Per Population ", color = "Country") +
+  theme_minimal()
+
+```
+
+## Analysis of number of cases in the US States from 2020 to 2023
+
+As from seen above, the reliability of the global data depends on whether a country chooses or is capable to report COVID-19 cases. Therefore, the US data is analyzed since it is expected for all US States to have similar level of healthcare system and guidelines for COVID-19. Similar to the global data above,  the data is organized so that the number of COVID-19 cases for each state is shown for each year. The population for each state is assumed to be constant over the years, and US territories that are not States are excluded from analysis. Top and bottom five state in the data set table for percentage of number of cases over population in 2023 are observed.
+```{r organize_US_State_Data,,message=FALSE}
+
+#US data by state
+US_by_state <- US %>% group_by(Province_State, Country_Region, date) %>% 
+  summarize(cases = sum(cases),deaths = sum(deaths), Population = sum(Population)) %>%
+  select(Province_State,Country_Region,date,cases,deaths,Population) %>% ungroup()
+
+US_by_state <- US_by_state %>% mutate(year = lubridate::year(date))
+US_state_cases_per_pop <- US_by_state %>%
+  group_by(Province_State, year) %>%
+  summarise(
+    Total_Cases = max(cases, na.rm = TRUE),
+    Total_Death = max(deaths, na.rm = TRUE),
+    Population = max(Population, na.rm = TRUE)
+  ) %>%
+  mutate(Cases_Per_Population_Per = 100* (Total_Cases / Population)) %>% 
+  ungroup()
+
+#Guam is excluded since it is not a US state
+US_state_cases_per_pop <- US_state_cases_per_pop %>% 
+  filter(Population > 0 & Province_State != "Guam") %>% 
+  filter(Province_State != "American Samoa" & Province_State != "Virgin Islands") %>% 
+  filter(Province_State != "Northern Mariana Islands")
+
+# Get the top 5 states overall
+top_5_states <- US_state_cases_per_pop %>%
+  filter(year == 2023) %>% 
+  arrange(desc(Cases_Per_Population_Per)) %>%
+  slice_head(n = 5)
+
+#get top 5 US states
+top_5_states_all_years <- US_state_cases_per_pop %>%
+  filter(Province_State %in% (top_5_states$Province_State))
+
+# Get the least 5 states overall
+least_5_states <- US_state_cases_per_pop %>%
+  filter(year == 2023) %>% 
+  arrange(desc(Cases_Per_Population_Per)) %>%
+  slice_tail(n = 5)
+
+#get least 5 US states
+least_5_states_all_years <- US_state_cases_per_pop %>%
+  filter(Province_State %in% (least_5_states$Province_State))
+
+colnames(top_5_states) <- c("State", "Year", "Number of Cases", "Number of Deaths", "Population", "% of Cases Per Population")
+kable(top_5_states, caption = "Top 5 US States with Most COVID-19 Cases")
+
+colnames(least_5_states) <- c("State", "Year", "Number of Cases", "Number of Deaths", "Population", "% of Cases Per Population")
+kable(least_5_states, caption = "Top 5 US States with Least COVID-19 Cases")
+```
+
+### Analysis on 10 US states with Most and Least COVID-19 Cases
+
+The figure below shows the five states in US where the highest percentage of number of people per population is infected by COVID-19. Similar to global data, there is a jump from 2021 to 2022 consistently across the five states. Compared to the figure above where the US average infectious percentage is around 30% in 2022 and 2023, the top 5 states has relatively higher percentage with all above 35%. It is interesting to note that all top five states are not in vicinity of one another, rather they are West coast, Midwest and East coast states. It could also mean that the US policy to urge people especially seniors to stay home and the fact that people were reluctant to fly between states were somewhat effective.Similarly to global data, once the Vaccine was prevalent/easily accessible in 2022 and people getting immunity to COVID-19, the number of cases reported went down in 2023.   
+
+```{r top5_state_plot}
+#plot the top 5 US states
+ggplot(top_5_states_all_years, aes(x = year, y = Cases_Per_Population_Per, color = Province_State)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "5 US States with most COVID-19 Cases Per Population",
+    x = "Year", y = "% of Cases Per Population", color = "States") +
+  theme_minimal()
+```
+
+It is not surprising that the five US States with least COVID-19 cases are not too from the average percentage of 30% in 2022 with around the lowest of 22, considering all the US states follow the similar guidelines from federal government. Therefore, unlike global data, the standard deviation of US States infection rate is small. Similar to the figure above, not all the five states are close to one another.
+
+```{r least5_state_plot}
+#plot the least 5 US states
+ggplot(least_5_states_all_years, aes(x = year, y = Cases_Per_Population_Per, color = Province_State)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "5 US States with least COVID-19 Cases Per Population",
+       x = "Year", y = "% of Cases Per Population", color = "States") +
+  theme_minimal()
+```
+
+## Modeling the severity of COVID-19 moving forward 
+
+The linear regression model is used to predict how the deaths to cases ratio will look like in the future. The total new deaths from each year of US State and global data is used as the dependent variable and the year is used as the independent variable. The coefficient of -0.294 shows that the mortality of COVID-19 is decreasing over time, which is expected since the vaccine has been found and people are getting immune to COVID-19. The small p-value of 0.0378 shows that time has somewhat significant effect on COVID mortality. It makes sense because over time, numerous solutions and guidelines of how to combat COVID-19 had been discovered. However, in the actual data, the percentage of deaths over cases increased. This could be due to the very few number of cases in 2023 and those cases could be related to the people with higher risks of COVID-19.   
+
+```{r modeling_data}
+US_state_totals <- US_by_state %>% 
+  group_by(year) %>% 
+  summarize(cases = max(cases),deaths = max(deaths))
+
+US_state_totals <- US_state_totals %>% 
+  mutate(new_cases = if_else(is.na(lag(cases)), cases, cases - lag(cases)), new_deaths = if_else(is.na(lag(deaths)), deaths, deaths - lag(deaths)))
+US_state_totals <- US_state_totals %>% mutate(deaths_per_case = 100 * new_deaths/new_cases)
+
+global_totals <- global_cases_per_pop %>% 
+  group_by(year) %>% 
+  summarize(cases = max(Total_Cases), deaths = max(Total_Deaths))
+
+global_totals <- global_totals %>% 
+  mutate(new_cases = if_else(is.na(lag(cases)), cases, cases - lag(cases)), new_deaths = if_else(is.na(lag(deaths)), deaths, deaths - lag(deaths)))
+global_totals <- global_totals %>% mutate(deaths_per_case = 100 * new_deaths/new_cases)
+
+combined_data <- rbind(US_state_totals, global_totals)
+
+lm_model_total <- lm(deaths_per_case ~ year, data =combined_data )
+summary(lm_model_total)
+combined_data <- combined_data %>% mutate(pred = predict(lm_model_total))
+
+# Plotting the data and the linear regression line
+ggplot()+
+  geom_line(data = US_state_totals, aes(x = year, y = deaths_per_case, color = "US States")) +
+  geom_line(data = global_totals, aes(x = year,y = deaths_per_case,color = "Global"))+
+  geom_line(data = combined_data, aes(x = year,y = pred,color = "Linear Regression Model"))+
+  labs(
+    title = "Trend of the mortality COVID-19 over time",
+    color = "Data",
+    x = "Year",
+    y = "% Of Deaths/Cases"
+  ) + theme_minimal()
+
+colnames(US_state_totals) <- c("Year", "Total Deaths", "Total Cases",  "New Cases", "New Deaths", "% Of New Deaths Per New Cases")
+kable(US_state_totals, caption = "US Data")
+colnames(global_totals) <- c("Year", "Total Deaths", "Total Cases",  "New Cases", "New Deaths", "% Of New Deaths Per New Cases")
+kable(global_totals, caption = "Global Data")
+```
+
+# Conclusion
+
+From the analysis above, it can be concluded that COVID-19 peaked at 2022 and its severity decreased in 2023. The global data is not as reliable as US state data since the data of five countries with the least COVID-19 cases does not seem to be limited due to other factors. Compared to global countries, US States have more consistent % of number of COVID-19 cases due to similar guidelines and health care system. Lastly, the linear regression model shows that the mortality of COVID-19 is decreasing over time. However, in 2023, the mortality rate increases both globally and within US. Even though we saw significant decrease of COVID-19 cases from 2022 to 2023, the percentage of death over cases slightly increase in 2023. It would be interesting if age data is included in the data analysis and include the age as one of the independent variable of the linear model. 
+
+It was surprising to see how US number of cases per population is a lot less than the countries that were most affected by COVID-19. Based on the news and social media, from my personal bias, I was expecting US to be a lot worse and expecting New York to be one of the worst states considering how crowded the New York City is. To mitigate my bias, instead of total number of cases, I looked at the % of cases per population. Similarly, the mortality rate increase in 2023 was unexpected considering that COVID-19 has been out of the news for a while. This was observed because % of number of deaths per cases were observed instead of just number of deaths. 
+
+
